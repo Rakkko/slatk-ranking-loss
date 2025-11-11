@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
+from logging import config
 import os
 import random
 from typing import Dict, Set
@@ -8,12 +10,13 @@ from typing import Dict, Set
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tqdm import tqdm
 import yaml
 from torch.utils.data import DataLoader
 
-from models import MatrixFactorization
+from models import MatrixFactorization, LightGCN, XSimGCL
 from losses import BPRLoss, SoftmaxLoss, SoftmaxLossAtK
-from metrics import recall_at_k, ndcg_at_k
+from metrics import recall_at_k, ndcg_at_k, precision_at_k
 from data.movielens import (
     TripletDataset,
     load_ml100k_interactions,
@@ -21,6 +24,9 @@ from data.movielens import (
     build_user_pos_dict,
 )
 from samplers import UniformNegativeSampler
+from models.base import BaseModel
+
+import wandb
 
 
 def set_seed(seed: int):
@@ -32,6 +38,25 @@ def set_seed(seed: int):
 def load_config(cfg_path: str) -> dict:
     with open(cfg_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def clear_cuda():
+    import torch
+    import gc
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+
+
+def build_model(num_users: int, num_items: int, **kwargs) -> BaseModel:
+    name = kwargs.pop("name").lower()
+    if name == "mf":
+        return MatrixFactorization(num_users, num_items, kwargs["embedding_dim"], kwargs["user_reg"], kwargs["item_reg"])
+    elif name == 'lightgcn':
+        return LightGCN(num_users, num_items, **kwargs)
+    elif name == 'xsimgcl':
+        return XSimGCL(num_users, num_items, **kwargs)
+    raise ValueError(f"Unknown model: {name}")
 
 
 def build_loss(name: str, params: dict) -> nn.Module:
@@ -49,26 +74,31 @@ def build_loss(name: str, params: dict) -> nn.Module:
     raise ValueError(f"Unknown loss: {name}")
 
 
-def evaluate(model: MatrixFactorization, user_to_eval_pos: Dict[int, Set[int]], k: int, device: torch.device) -> tuple[float, float]:
+def evaluate(model: BaseModel, user_to_eval_pos: Dict[int, Set[int]], k: int, device: torch.device) -> dict[str, float]:
     model.eval()
     with torch.no_grad():
         users = sorted(user_to_eval_pos.keys())
         if not users:
-            return 0.0, 0.0
+            return {}
         user_ids = torch.tensor(users, dtype=torch.long, device=device)
         scores = model.full_item_scores(user_ids)
         gt = [list(user_to_eval_pos[u]) for u in users]
         rec = recall_at_k(scores, gt, k)
         ndcg = ndcg_at_k(scores, gt, k)
-    return rec, ndcg
+        prec = precision_at_k(scores, gt, k)
+    # Use dict to return multiple metrics
+    return {
+        "rec": rec,
+        "ndcg": ndcg,
+        "prec": prec,
+    }
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="cfgs/default.yaml")
-    args = parser.parse_args()
-
-    cfg = load_config(args.config)
+def train(
+    cfg: dict,
+    project_name: str,
+    use_wandb: bool = True,
+):
     set_seed(int(cfg["train"].get("seed", 42)))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -87,8 +117,11 @@ def main():
     neg_sampler = UniformNegativeSampler(num_items, user_pos_dict)
 
     # 模型
-    emb_dim = int(cfg["model"]["embedding_dim"])
-    model = MatrixFactorization(num_users, num_items, emb_dim, cfg["model"]["user_reg"], cfg["model"]["item_reg"]).to(device)
+    # emb_dim = int(cfg["model"]["embedding_dim"])
+    # model = MatrixFactorization(num_users, num_items, emb_dim, cfg["model"]["user_reg"], cfg["model"]["item_reg"]).to(device)
+    model_kwargs = {"edges": interactions}
+    model_kwargs.update(cfg["model"])
+    model = build_model(num_users, num_items, **model_kwargs).to(device)
 
     # 损失
     loss_name = cfg["train"]["loss"].lower()
@@ -101,10 +134,22 @@ def main():
     num_negatives = int(cfg["train"]["num_negatives"])  # 用于 softmax 的候选近似与 BPR 的负例
     eval_k = int(cfg["train"]["eval_k"])  # 评估@K
 
+    # Logging
+    run_name = f"movielens_{cfg['model']['name']}_{loss_name}@{eval_k}"
+    if use_wandb:
+        wandb.login(key=os.environ.get("WANDB_API_KEY", None))
+        wandb.init(
+            project=project_name,
+            config=cfg,
+            name=run_name,
+        )
+
+    test_metrics = {}
+
     for epoch in range(1, epochs + 1):
         model.train()
         epoch_loss = 0.0
-        for batch in train_loader:
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}"):
             user_ids, pos_ids = [x.to(device) for x in batch]
 
             # 负采样
@@ -126,18 +171,62 @@ def main():
             # 加 L2 正则
             reg = model.l2_regularization(user_ids, pos_ids, neg_ids)
             total_loss = loss + reg
+            if isinstance(model, XSimGCL):
+                # 加对比损失
+                contrast_loss = model.contrastive_loss(user_ids, pos_ids)
+                total_loss += contrast_loss
 
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
             epoch_loss += float(total_loss.detach().cpu())
 
+            if use_wandb:
+                wandb.log({
+                    "train/batch_loss": float(total_loss.detach().cpu())
+                })
+
         # 评估（全量打分）
-        val_recall, val_ndcg = evaluate(model, val_dict, eval_k, device)
-        test_recall, test_ndcg = evaluate(model, test_dict, eval_k, device)
-        print(f"Epoch {epoch:03d} | loss={epoch_loss/len(train_loader):.4f} | val R@{eval_k}={val_recall:.4f} NDCG@{eval_k}={val_ndcg:.4f} | test R@{eval_k}={test_recall:.4f} NDCG@{eval_k}={test_ndcg:.4f}")
+        val_metrics = evaluate(model, val_dict, eval_k, device)
+        test_metrics = evaluate(model, test_dict, eval_k, device)
+        print(f"Epoch {epoch:03d} | loss={epoch_loss/len(train_loader):.4f} | val@{eval_k} {val_metrics}")
+
+        if use_wandb:
+            wandb.log({
+                "train/epoch_loss": epoch_loss / len(train_loader),
+            } | {f"val/{k}": v for k, v in val_metrics.items()} | {f"test/{k}": v for k, v in test_metrics.items()})
+
+    print("Training finished.")
+    print(f"Test@{eval_k} {test_metrics}")
+
+    if use_wandb:
+        wandb.finish()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="cfgs/default.yaml")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+
+    from copy import deepcopy
+
+    project_name = f"comp5331-project-{datetime.now().strftime('%d%m%H%M')}"
+
+    # Hyperparameter sweep
+    for model_name in ['mf', 'lightgcn', 'xsimgcl']:
+        for loss_name in ['sl', 'bpr', 'slatk']:
+            k_values = [5, 10, 20] if loss_name == 'slatk' else [10]
+            for k in k_values:
+                cfg_hyper = deepcopy(cfg)
+                cfg_hyper['train']['loss'] = loss_name
+                cfg_hyper['train']['eval_k'] = k
+                cfg_hyper['train']['loss_params']['topk'] = k
+                cfg_hyper['model']['name'] = model_name
+                train(cfg_hyper, project_name, use_wandb=True)
+                clear_cuda()
 
 
 if __name__ == "__main__":
     main()
-
