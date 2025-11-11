@@ -1,9 +1,10 @@
 import torch
 from torch import nn
 from typing import List, Tuple, Optional
+from .base import BaseModel
 
 
-class XSimGCL(nn.Module):
+class XSimGCL(BaseModel):
 
     def __init__(
         self,
@@ -64,7 +65,7 @@ class XSimGCL(nn.Module):
         final_embeddings = torch.stack(embeddings_list, dim=1).mean(dim=1)
         contrast_embeddings = embeddings_list[self.contrast_layer - 1]
         return final_embeddings, contrast_embeddings
-    
+
     @staticmethod
     def _infoNCE(v1: torch.Tensor, v2: torch.Tensor, tau: float) -> torch.Tensor:
         v1 = nn.functional.normalize(v1, dim=1)
@@ -77,12 +78,12 @@ class XSimGCL(nn.Module):
         user_embeds = final_embeddings[user_ids]
         item_embeds = final_embeddings[item_ids + self.user_embeddings.num_embeddings]
         return (user_embeds * item_embeds).sum(dim=-1)
-    
+
     @torch.no_grad()
     def full_item_scores(self, user_ids: torch.Tensor) -> torch.Tensor:
         final_embeddings, _ = self._embed()
-        user_embeds = final_embeddings[user_ids] # [B, D]
-        item_embeds = final_embeddings[self.user_embeddings.num_embeddings:] # [N, D]
+        user_embeds = final_embeddings[user_ids]  # [B, D]
+        item_embeds = final_embeddings[self.user_embeddings.num_embeddings:]  # [N, D]
         return user_embeds @ item_embeds.t()
 
     def contrastive_loss(self, user_ids: torch.Tensor, item_ids: torch.Tensor) -> torch.Tensor:

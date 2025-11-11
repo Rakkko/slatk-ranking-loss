@@ -1,8 +1,10 @@
 import torch
 from torch import nn
 import typing as t
+from .base import BaseModel
 
-class MatrixFactorization(nn.Module):
+
+class MatrixFactorization(BaseModel):
     """
     简单 MF（矩阵分解）模型：score(u, i) = <p_u, q_i>
 
@@ -47,4 +49,3 @@ class MatrixFactorization(nn.Module):
         if neg_item_ids is not None:
             reg = reg + self.item_embeddings(neg_item_ids).pow(2).sum() * self.item_reg
         return reg
-

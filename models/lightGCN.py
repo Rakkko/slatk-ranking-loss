@@ -1,9 +1,10 @@
 import torch
 from torch import nn
 from typing import List, Tuple, Optional
+from .base import BaseModel
 
 
-class LightGCN(nn.Module):
+class LightGCN(BaseModel):
 
     def __init__(
         self,
@@ -61,8 +62,8 @@ class LightGCN(nn.Module):
     @torch.no_grad()
     def full_item_scores(self, user_ids: torch.Tensor) -> torch.Tensor:
         final_embeddings = self._embed()
-        user_embeds = final_embeddings[user_ids] # [B, D]
-        item_embeds = final_embeddings[self.user_embeddings.num_embeddings:] # [N, D]
+        user_embeds = final_embeddings[user_ids]  # [B, D]
+        item_embeds = final_embeddings[self.user_embeddings.num_embeddings:]  # [N, D]
         return user_embeds @ item_embeds.t()
 
     def l2_regularization(self, user_ids: torch.Tensor, pos_item_ids: torch.Tensor, neg_item_ids: Optional[torch.Tensor] = None) -> torch.Tensor:

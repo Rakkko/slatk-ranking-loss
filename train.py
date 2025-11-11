@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from logging import config
 import os
 import random
@@ -23,8 +24,10 @@ from data.movielens import (
     build_user_pos_dict,
 )
 from samplers import UniformNegativeSampler
+from models.base import BaseModel
 
 import wandb
+
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -36,6 +39,7 @@ def load_config(cfg_path: str) -> dict:
     with open(cfg_path, "r") as f:
         return yaml.safe_load(f)
 
+
 def clear_cuda():
     import torch
     import gc
@@ -43,7 +47,8 @@ def clear_cuda():
         torch.cuda.empty_cache()
     gc.collect()
 
-def build_model(num_users: int, num_items: int, **kwargs) -> nn.Module:
+
+def build_model(num_users: int, num_items: int, **kwargs) -> BaseModel:
     name = kwargs.pop("name").lower()
     if name == "mf":
         return MatrixFactorization(num_users, num_items, kwargs["embedding_dim"], kwargs["user_reg"], kwargs["item_reg"])
@@ -69,7 +74,7 @@ def build_loss(name: str, params: dict) -> nn.Module:
     raise ValueError(f"Unknown loss: {name}")
 
 
-def evaluate(model: MatrixFactorization, user_to_eval_pos: Dict[int, Set[int]], k: int, device: torch.device) -> dict[str, float]:
+def evaluate(model: BaseModel, user_to_eval_pos: Dict[int, Set[int]], k: int, device: torch.device) -> dict[str, float]:
     model.eval()
     with torch.no_grad():
         users = sorted(user_to_eval_pos.keys())
@@ -91,7 +96,7 @@ def evaluate(model: MatrixFactorization, user_to_eval_pos: Dict[int, Set[int]], 
 
 def train(
     cfg: dict,
-    project_name: str = "comp5331-project",
+    project_name: str,
     use_wandb: bool = True,
 ):
     set_seed(int(cfg["train"].get("seed", 42)))
@@ -178,7 +183,7 @@ def train(
 
             if use_wandb:
                 wandb.log({
-                    "batch_loss": float(total_loss.detach().cpu())
+                    "train/batch_loss": float(total_loss.detach().cpu())
                 })
 
         # 评估（全量打分）
@@ -188,14 +193,15 @@ def train(
 
         if use_wandb:
             wandb.log({
-                "epoch_loss": epoch_loss / len(train_loader),
-            } | {f"val_{k}": v for k, v in val_metrics.items()} | {f"test_{k}": v for k, v in test_metrics.items()})
+                "train/epoch_loss": epoch_loss / len(train_loader),
+            } | {f"val/{k}": v for k, v in val_metrics.items()} | {f"test/{k}": v for k, v in test_metrics.items()})
 
     print("Training finished.")
     print(f"Test@{eval_k} {test_metrics}")
 
     if use_wandb:
         wandb.finish()
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -206,16 +212,21 @@ def main():
 
     from copy import deepcopy
 
+    project_name = f"comp5331-project-{datetime.now().strftime('%d%m%H%M')}"
+
     # Hyperparameter sweep
-    for loss_name in ['sl', 'bpr', 'slatk']:
-        k_values = [5, 10, 20] if loss_name == 'slatk' else [10]
-        for k in k_values:
-            cfg_hyper = deepcopy(cfg)
-            cfg_hyper['train']['loss'] = loss_name
-            cfg_hyper['train']['eval_k'] = k
-            cfg_hyper['train']['loss_params']['topk'] = k
-            train(cfg_hyper, use_wandb=True)
-            clear_cuda()
+    for model_name in ['mf', 'lightgcn', 'xsimgcl']:
+        for loss_name in ['sl', 'bpr', 'slatk']:
+            k_values = [5, 10, 20] if loss_name == 'slatk' else [10]
+            for k in k_values:
+                cfg_hyper = deepcopy(cfg)
+                cfg_hyper['train']['loss'] = loss_name
+                cfg_hyper['train']['eval_k'] = k
+                cfg_hyper['train']['loss_params']['topk'] = k
+                cfg_hyper['model']['name'] = model_name
+                train(cfg_hyper, project_name, use_wandb=True)
+                clear_cuda()
+
 
 if __name__ == "__main__":
     main()
