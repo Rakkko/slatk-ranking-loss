@@ -23,6 +23,7 @@ from data.movielens import (
     split_leave_one_out,
     build_user_pos_dict,
 )
+from data.read_proc_data import get_data_summary, load_proc_data
 from samplers import UniformNegativeSampler
 from models.base import BaseModel
 
@@ -103,8 +104,12 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 数据
-    interactions, num_users, num_items = load_ml100k_interactions(cfg["dataset"]["root"], cfg["dataset"]["threshold"])
-    train_pairs, val_dict, test_dict = split_leave_one_out(interactions, num_users)
+    if cfg["dataset"]["type"] == "proc":
+        num_users, num_items = get_data_summary(cfg["dataset"]["root"])
+        train_pairs, val_dict, test_dict = load_proc_data(cfg["dataset"]["root"])
+    else:
+        interactions, num_users, num_items = load_ml100k_interactions(cfg["dataset"]["root"], cfg["dataset"]["threshold"])
+        train_pairs, val_dict, test_dict = split_leave_one_out(interactions, num_users)
     train_ds = TripletDataset(train_pairs)
     train_loader = DataLoader(
         train_ds,
