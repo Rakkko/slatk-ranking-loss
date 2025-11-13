@@ -99,4 +99,3 @@ def build_user_pos_dict(pairs: List[Tuple[int, int]], num_users: int) -> Dict[in
     for u, i in pairs:
         d[u].add(i)
     return d
-

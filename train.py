@@ -104,12 +104,15 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 数据
+    model_kwargs = {}
+
     if cfg["dataset"]["type"] == "proc":
         num_users, num_items = get_data_summary(cfg["dataset"]["root"])
         train_pairs, val_dict, test_dict = load_proc_data(cfg["dataset"]["root"])
     else:
         interactions, num_users, num_items = load_ml100k_interactions(cfg["dataset"]["root"], cfg["dataset"]["threshold"])
         train_pairs, val_dict, test_dict = split_leave_one_out(interactions, num_users)
+        model_kwargs["edges"] = interactions
     train_ds = TripletDataset(train_pairs)
     train_loader = DataLoader(
         train_ds,
@@ -124,7 +127,6 @@ def train(
     # 模型
     # emb_dim = int(cfg["model"]["embedding_dim"])
     # model = MatrixFactorization(num_users, num_items, emb_dim, cfg["model"]["user_reg"], cfg["model"]["item_reg"]).to(device)
-    model_kwargs = {"edges": interactions}
     model_kwargs.update(cfg["model"])
     model = build_model(num_users, num_items, **model_kwargs).to(device)
 
