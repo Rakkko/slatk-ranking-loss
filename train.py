@@ -104,12 +104,15 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 数据
+    model_kwargs = {}
+
     if cfg["dataset"]["type"] == "proc":
         num_users, num_items = get_data_summary(cfg["dataset"]["root"])
         train_pairs, val_dict, test_dict = load_proc_data(cfg["dataset"]["root"])
     else:
         interactions, num_users, num_items = load_ml100k_interactions(cfg["dataset"]["root"], cfg["dataset"]["threshold"])
         train_pairs, val_dict, test_dict = split_leave_one_out(interactions, num_users)
+        model_kwargs["edges"] = interactions
     train_ds = TripletDataset(train_pairs)
     train_loader = DataLoader(
         train_ds,
@@ -124,7 +127,6 @@ def train(
     # 模型
     # emb_dim = int(cfg["model"]["embedding_dim"])
     # model = MatrixFactorization(num_users, num_items, emb_dim, cfg["model"]["user_reg"], cfg["model"]["item_reg"]).to(device)
-    model_kwargs = {"edges": interactions}
     model_kwargs.update(cfg["model"])
     model = build_model(num_users, num_items, **model_kwargs).to(device)
 
@@ -220,15 +222,16 @@ def main():
     project_name = f"comp5331-project-{datetime.now().strftime('%d%m%H%M')}"
 
     # Hyperparameter sweep
-    for model_name in ['mf', 'lightgcn', 'xsimgcl']:
+    for model_name in ['lightgcn', 'xsimgcl', 'mf']:
         for loss_name in ['sl', 'bpr', 'slatk']:
-            k_values = [5, 10, 20] if loss_name == 'slatk' else [10]
+            k_values = [10] if loss_name == 'slatk' else [10]
             for k in k_values:
                 cfg_hyper = deepcopy(cfg)
                 cfg_hyper['train']['loss'] = loss_name
                 cfg_hyper['train']['eval_k'] = k
                 cfg_hyper['train']['loss_params']['topk'] = k
                 cfg_hyper['model']['name'] = model_name
+                cfg_hyper["train"]["epochs"] = 100
                 train(cfg_hyper, project_name, use_wandb=True)
                 clear_cuda()
 

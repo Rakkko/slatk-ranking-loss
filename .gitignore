@@ -8,3 +8,4 @@ checkpoints/
 data/ml-100k.zip
 .vscode
 wandb
+~$*.docx
