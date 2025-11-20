@@ -161,7 +161,7 @@ if __name__ == "__main__":
         star_threshold,
     )
     process_amazon(
-        "Amazon2014-Electric",
+        "Amazon2014-Electronic",
         "raw/ratings_Electronics.csv",
         core,
         star_threshold,
